@@ -8,6 +8,7 @@
 #include <complex.h>
 #include <stdbool.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include "tsp-types.h"
 #include "tsp-job.h"
@@ -35,6 +36,25 @@ long int myseed= 0;
 /* nombre de threads */
 int nb_threads=1;
 
+uint64_t vpres=0;
+
+/* solution de type tsp_path_t */
+tsp_path_t sol;
+/* longueuer de la solution */
+int sol_len;
+/* mutex pour la solution */
+//pthread_mutex_t mutex_sol;
+/* struct pour avoir une queue */
+struct tsp_queue q;
+/* mutex pour la queue*/
+pthread_mutex_t mutex_q;
+/* mutex pour le minimum */
+extern pthread_mutex_t mutex_min;
+/* cuts */
+long long int cuts = 0;
+/* mutex pour les cuts */
+extern pthread_mutex_t mutex_cuts;
+
 /* affichage SVG */
 bool affiche_sol= false;
 bool affiche_progress=false;
@@ -43,7 +63,9 @@ bool quiet=false;
 static void generate_tsp_jobs (struct tsp_queue *q, int hops, int len, uint64_t vpres, tsp_path_t path, long long int *cuts, tsp_path_t sol, int *sol_len, int depth)
 {
     if (len >= minimum) {
+        //pthread_mutex_lock(&mutex_cuts);
         (*cuts)++ ;
+	//pthread_mutex_unlock(&mutex_cuts);
         return;
     }
     
@@ -69,15 +91,49 @@ static void usage(const char *name) {
   exit (-1);
 }
 
+
+void *exec_tsp(void *arg) {
+    /* calculer chacun des travaux */
+    tsp_path_t solution;
+    memset (solution, -1, MAX_TOWNS * sizeof (int));
+    solution[0] = 0;
+    pthread_mutex_lock(&mutex_q);
+    while (!empty_queue (&q)) {
+        int hops = 0, len = 0;
+        get_job (&q, solution, &hops, &len, &vpres);
+	//pthread_mutex_unlock(&mutex_q);
+	// le noeud est moins bon que la solution courante
+	if (minimum < INT_MAX
+	    && (nb_towns - hops) > 10
+	    && ( (lower_bound_using_hk(solution, hops, len, vpres)) >= minimum
+		 || (lower_bound_using_lp(solution, hops, len, vpres)) >= minimum)
+	    ) {
+	  //pthread_mutex_lock(&mutex_q);
+	  continue;
+	}
+	//pthread_mutex_unlock(&mutex_q);
+	tsp (hops, len, vpres, solution, &cuts, sol, &sol_len);
+	//pthread_mutex_lock(&mutex_q);
+    }
+    pthread_mutex_unlock(&mutex_q);
+    return NULL;
+}
+
+
 int main (int argc, char **argv)
 {
+  /* init mutex */
+  //pthread_mutex_init(&mutex_sol, NULL);
+  pthread_mutex_init(&mutex_q, NULL);
+  pthread_mutex_init(&mutex_min, NULL);
+  pthread_mutex_init(&mutex_cuts, NULL);
+
     unsigned long long perf;
     tsp_path_t path;
-    uint64_t vpres=0;
-    tsp_path_t sol;
-    int sol_len;
-    long long int cuts = 0;
-    struct tsp_queue q;
+    //tsp_path_t sol;
+    //int sol_len;
+    //long long int cuts = 0;
+    //struct tsp_queue q;
     struct timespec t1, t2;
 
     /* lire les arguments */
@@ -126,27 +182,21 @@ int main (int argc, char **argv)
     /* mettre les travaux dans la file d'attente */
     generate_tsp_jobs (&q, 1, 0, vpres, path, &cuts, sol, & sol_len, 3);
     no_more_jobs (&q);
-   
-    /* calculer chacun des travaux */
-    tsp_path_t solution;
-    memset (solution, -1, MAX_TOWNS * sizeof (int));
-    solution[0] = 0;
-    while (!empty_queue (&q)) {
-        int hops = 0, len = 0;
-        get_job (&q, solution, &hops, &len, &vpres);
-	
-	// le noeud est moins bon que la solution courante
-	if (minimum < INT_MAX
-	    && (nb_towns - hops) > 10
-	    && ( (lower_bound_using_hk(solution, hops, len, vpres)) >= minimum
-		 || (lower_bound_using_lp(solution, hops, len, vpres)) >= minimum)
-	    )
-
-	  continue;
-
-	tsp (hops, len, vpres, solution, &cuts, sol, &sol_len);
+    /* cree tableau de thread ids */
+    pthread_t *tid;
+    //if(nb_threads > 1) {
+      tid = malloc((nb_threads - 1) * sizeof(pthread_t));
+      for(unsigned int i = 0; i < nb_threads - 1; i++) {
+	pthread_create(tid + i, NULL, exec_tsp, NULL);
+      }
+      //}
+    // pour thread principal
+    exec_tsp(NULL);
+    // attend les threads
+    for(unsigned int i = 0; i < nb_threads - 1; i++) {
+      pthread_join(tid[i], NULL);
     }
-    
+
     clock_gettime (CLOCK_REALTIME, &t2);
 
     if (affiche_sol)
@@ -157,5 +207,13 @@ int main (int argc, char **argv)
 	   nb_towns, myseed, sol_len, nb_threads,
 	   perf/1000000ll, perf%1000000ll, cuts);
 
+    /* destroy mutex */
+    //pthread_mutex_destroy(&mutex_sol);
+    pthread_mutex_destroy(&mutex_q);
+    pthread_mutex_destroy(&mutex_min);
+    pthread_mutex_destroy(&mutex_cuts);
+
     return 0 ;
 }
+
+

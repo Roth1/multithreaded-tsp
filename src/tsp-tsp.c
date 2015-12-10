@@ -8,6 +8,11 @@
 #include "tsp-tsp.h"
 #include "tsp-lp.h"
 #include "tsp-hkbound.h"
+#include <pthread.h>
+
+/* ajout des mutex*/
+pthread_mutex_t mutex_cuts;
+pthread_mutex_t mutex_min;
 
 /* dernier minimum trouvé */
 int minimum;
@@ -21,18 +26,21 @@ int present (int city, int hops, tsp_path_t path, uint64_t vpres)
 }
 
 
-
 void tsp (int hops, int len, uint64_t vpres, tsp_path_t path, long long int *cuts, tsp_path_t sol, int *sol_len)
 {
     if (len + cutprefix[(nb_towns-hops)] >= minimum) {
+      pthread_mutex_lock(&mutex_cuts);
       (*cuts)++ ;
+      pthread_mutex_unlock(&mutex_cuts);
       return;
     }
 
     /* calcul de l'arbre couvrant comme borne inférieure */
     if ((nb_towns - hops) > 6 &&
 	lower_bound_using_hk(path, hops, len, vpres) >= minimum) {
+      pthread_mutex_lock(&mutex_cuts);
       (*cuts)++;
+      pthread_mutex_unlock(&mutex_cuts);
       return;
     }
 
@@ -50,11 +58,13 @@ void tsp (int hops, int len, uint64_t vpres, tsp_path_t path, long long int *cut
 	    int me = path [hops - 1];
 	    int dist = tsp_distance[me][0]; // retourner en 0
             if ( len + dist < minimum ) {
+	            pthread_mutex_lock(&mutex_min);
 		    minimum = len + dist;
 		    *sol_len = len + dist;
 		    memcpy(sol, path, nb_towns*sizeof(int));
 		    if (!quiet)
 		      print_solution (path, len+dist);
+		    pthread_mutex_unlock(&mutex_min);
 	    }
     } else {
         int me = path [hops - 1];        
